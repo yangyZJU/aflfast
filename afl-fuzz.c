@@ -5029,8 +5029,11 @@ static u8 fuzz_one(char** argv) {
 
 #endif /* ^IGNORE_FINDS */
 
-  if (not_on_tty)
-    ACTF("Fuzzing test case #%u (%u total)...", current_entry, queued_paths);
+  if (not_on_tty) {
+    ACTF("Fuzzing test case #%u (%u total, %llu uniq crashes found)...",
+         current_entry, queued_paths, unique_crashes);
+    fflush(stdout);
+  }
 
   /* Map the test case into memory. */
 
@@ -7036,6 +7039,12 @@ static void check_if_tty(void) {
 
   struct winsize ws;
 
+  if (getenv("AFL_NO_UI")) {
+    OKF("Disabling the UI because AFL_NO_UI is set.");
+    not_on_tty = 1;
+    return;
+  }
+
   if (ioctl(1, TIOCGWINSZ, &ws)) {
 
     if (errno == ENOTTY) {
@@ -7424,8 +7433,9 @@ static void get_core_count(void) {
 
 #endif /* __APPLE__ || __FreeBSD__ || __OpenBSD__ */
 
-    OKF("You have %u CPU cores and %u runnable tasks (utilization: %0.0f%%).",
-        cpu_core_count, cur_runnable, cur_runnable * 100.0 / cpu_core_count);
+    OKF("You have %u CPU core%s and %u runnable tasks (utilization: %0.0f%%).",
+        cpu_core_count, cpu_core_count > 1 ? "s" : "",
+        cur_runnable, cur_runnable * 100.0 / cpu_core_count);
 
     if (cpu_core_count > 1) {
 
@@ -7779,7 +7789,7 @@ int main(int argc, char** argv) {
           u8* c;
 
           if (sync_id) FATAL("Multiple -S or -M options not supported");
-          sync_id = optarg;
+          sync_id = ck_strdup(optarg);
 
           if ((c = strchr(sync_id, ':'))) {
 
@@ -7800,7 +7810,7 @@ int main(int argc, char** argv) {
       case 'S': 
 
         if (sync_id) FATAL("Multiple -S or -M options not supported");
-        sync_id = optarg;
+        sync_id = ck_strdup(optarg);
         break;
 
       case 'f': /* target file */
@@ -8135,6 +8145,7 @@ stop_fuzzing:
   destroy_queue();
   destroy_extras();
   ck_free(target_path);
+  ck_free(sync_id);
   kh_destroy(32, cksum2fuzz);
 
   alloc_report();
