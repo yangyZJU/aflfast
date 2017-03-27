@@ -148,6 +148,13 @@ afl-sid (Jacek Wielemborek)
 
   https://github.com/d33tah/afl-sid
 
+afl-monitor (Paul S. Ziegler)
+-----------------------------
+
+  Provides more detailed and versatile statistics about your running AFL jobs.
+
+  https://github.com/reflare/afl-monitor
+
 -----------------------------------------------------------
 Crash triage, coverage analysis, and other companion tools:
 -----------------------------------------------------------
@@ -172,6 +179,13 @@ afl-cov (Michael Rash)
   Produces human-readable coverage data based on the output queue of afl-fuzz.
 
   https://github.com/mrash/afl-cov
+
+afl-sancov (Bhargava Shastry)
+-----------------------------
+
+  Similar to afl-cov, but uses clang sanitizer instrumentation.
+
+  https://github.com/bshastry/afl-sancov
 
 RecidiVM (Jakub Wilk)
 ---------------------
