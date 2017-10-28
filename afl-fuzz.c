@@ -31,7 +31,6 @@
 #include "debug.h"
 #include "alloc-inl.h"
 #include "hash.h"
-#include "khash.h"
 
 #include <stdio.h>
 #include <unistd.h>
@@ -252,7 +251,8 @@ struct queue_entry {
 
   u64 exec_us,                        /* Execution time (us)              */
       handicap,                       /* Number of queue cycles behind    */
-      depth;                          /* Path depth                       */
+      depth,                          /* Path depth                       */
+      n_fuzz;                         /* Number of fuzz, does not overflow */
 
   u8* trace_mini;                     /* Trace bytes, if kept             */
   u32 tc_ref;                         /* Trace bytes ref count            */
@@ -330,22 +330,7 @@ enum {
   /* 05 */ FAULT_NOBITS
 };
 
-static u32 next_p2(u32 val);
-
-KHASH_MAP_INIT_INT(32,u32)
-khash_t(32) *cksum2fuzz;
-
-static u32 getFuzz(u32 key_cksum){
-
-  khiter_t k = kh_get(32, cksum2fuzz, key_cksum);
-
-  if (k != kh_end(cksum2fuzz)){
-    return kh_value(cksum2fuzz, k);
-  } else {
-    return 0;
-  }
-}
-
+static u64 next_p2(u64 val);
 
 /* Get unix time in milliseconds */
 
@@ -806,6 +791,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
   q->len          = len;
   q->depth        = cur_depth + 1;
   q->passed_det   = passed_det;
+  q->n_fuzz       = 1;
 
   if (q->depth > max_depth) max_depth = q->depth;
 
@@ -1262,7 +1248,7 @@ static void minimize_bits(u8* dst, u8* src) {
 static void update_bitmap_score(struct queue_entry* q) {
 
   u32 i;
-  u32 fuzz_p2      = next_p2 (getFuzz(q->exec_cksum));
+  u64 fuzz_p2      = next_p2 (q->n_fuzz);
   u64 fav_factor = q->exec_us * q->len;
 
   /* For every byte set in trace_bits[], see if there is a previous winner,
@@ -1274,7 +1260,7 @@ static void update_bitmap_score(struct queue_entry* q) {
 
        if (top_rated[i]) {
 
-         u32 top_rated_fuzz_p2    = next_p2 (getFuzz(top_rated[i]->exec_cksum));
+         u64 top_rated_fuzz_p2    = next_p2 (top_rated[i]->n_fuzz);
          u64 top_rated_fav_factor = top_rated[i]->exec_us * top_rated[i]->len;
 
          if (fuzz_p2 > top_rated_fuzz_p2) continue;
@@ -3155,11 +3141,15 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  keeping = 0, res;
 
   /* Update path frequency. */
-  khiter_t k;
-  u32 key_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
-  k = kh_get(32, cksum2fuzz, key_cksum);
-  if (k != kh_end(cksum2fuzz)){
-    kh_value(cksum2fuzz, k) ++;
+  u32 cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+
+  struct queue_entry* q = queue;
+  while (q) {
+    if (q->exec_cksum == cksum)
+      q->n_fuzz = q->n_fuzz + 1;
+
+    q = q->next;
+
   }
 
   if (fault == crash_mode) {
@@ -3190,13 +3180,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
       queued_with_cov++;
     }
 
-    queue_top->exec_cksum = key_cksum;
-
-    int ret;
-    if (k == kh_end (cksum2fuzz)) {
-      k = kh_put (32, cksum2fuzz, key_cksum, &ret);
-      kh_value (cksum2fuzz, k) = 1;
-    }
+    queue_top->exec_cksum = cksum;
 
     /* Try to calibrate inline; this also calls update_bitmap_score() when
        successful. */
@@ -4485,11 +4469,11 @@ static void show_init_stats(void) {
 
 
 /* Find first power of two greater or equal to val (assuming val under
-   2^31). */
+   2^63). */
 
-static u32 next_p2(u32 val) {
+static u64 next_p2(u64 val) {
 
-  u32 ret = 1;
+  u64 ret = 1;
   while (val > ret) ret <<= 1;
   return ret;
 
@@ -4778,9 +4762,12 @@ static u32 calculate_score(struct queue_entry* q) {
 
   }
 
-  u32 fuzz = getFuzz(q->exec_cksum);
-  u32 fuzz_total, n_paths, fuzz_mu;
+  u64 fuzz = q->n_fuzz;
+  u64 fuzz_total;
+
+  u32 n_paths, fuzz_mu;
   u32 factor = 1;
+
   switch (schedule) {
 
     case EXPLORE: 
@@ -4796,9 +4783,9 @@ static u32 calculate_score(struct queue_entry* q) {
 
       struct queue_entry *queue_it = queue;	
       while (queue_it) {
-        fuzz_total += getFuzz(queue_it->exec_cksum);
+        fuzz_total += queue_it->n_fuzz;
         n_paths ++;
-        queue_it = queue_it -> next;
+        queue_it = queue_it->next;
       }
 
       fuzz_mu = fuzz_total / n_paths;
@@ -7827,9 +7814,6 @@ int main(int argc, char** argv) {
   struct timeval tv;
   struct timezone tz;
 
-  /* Allocate memory for hashmaps */
-  cksum2fuzz = kh_init(32);
-
   SAYF(cCYA "afl-fuzz " cBRI VERSION cRST " by <lcamtuf@google.com>. Power schedules by <marcel.boehme@acm.org>\n");
 
   doc_path = access(DOC_PATH, F_OK) ? "docs" : DOC_PATH;
@@ -8225,7 +8209,6 @@ stop_fuzzing:
   destroy_extras();
   ck_free(target_path);
   ck_free(sync_id);
-  kh_destroy(32, cksum2fuzz);
 
   alloc_report();
 
