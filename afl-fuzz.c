@@ -97,7 +97,7 @@ static u32 hang_tmout = EXEC_TIMEOUT; /* Timeout used for hang det (ms)   */
 EXP_ST u64 mem_limit  = MEM_LIMIT;    /* Memory cap for child (MB)        */
 
 static u32 stats_update_freq = 1;     /* Stats update frequency (execs)   */
-
+/**************************************************************************************************/
 static u8 schedule = 0;               /* Power schedule (default: FAST)   */
 enum {
   /* 00 */ FAST,                      /* Exponential schedule             */
@@ -107,7 +107,7 @@ enum {
   /* 04 */ QUAD,                      /* Quadratic schedule               */
   /* 05 */ EXPLOIT                    /* AFL's exploitation-based const.  */
 };
-
+/**************************************************************************************************/ // new add
 EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            force_deterministic,       /* Force deterministic stages?      */
            use_splicing,              /* Recombine input files?           */
@@ -246,13 +246,13 @@ struct queue_entry {
       fs_redundant;                   /* Marked as redundant in the fs?   */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
-      fuzz_level,                     /* Number of fuzzing iterations     */
+      fuzz_level,                     /* Number of fuzzing iterations     */ // new add 从种子池中选取种子ti的次数 模糊迭代次数
       exec_cksum;                     /* Checksum of the execution trace  */
 
   u64 exec_us,                        /* Execution time (us)              */
       handicap,                       /* Number of queue cycles behind    */
       depth,                          /* Path depth                       */
-      n_fuzz;                         /* Number of fuzz, does not overflow */
+      n_fuzz;                         /* Number of fuzz, does not overflow */ // new add 表示执行路径为i的测试用例的总数
 
   u8* trace_mini;                     /* Trace bytes, if kept             */
   u32 tc_ref;                         /* Trace bytes ref count            */
@@ -330,7 +330,7 @@ enum {
   /* 05 */ FAULT_NOBITS
 };
 
-static u64 next_p2(u64 val);
+static u64 next_p2(u64 val); // new add 求大于等于val的2^ret，返回值是ret 即幂
 
 /* Get unix time in milliseconds */
 
@@ -791,7 +791,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
   q->len          = len;
   q->depth        = cur_depth + 1;
   q->passed_det   = passed_det;
-  q->n_fuzz       = 1;
+  q->n_fuzz       = 1; // new add
 
   if (q->depth > max_depth) max_depth = q->depth;
 
@@ -1243,12 +1243,15 @@ static void minimize_bits(u8* dst, u8* src) {
    The first step of the process is to maintain a list of top_rated[] entries
    for every byte in the bitmap. We win that slot if there is no previous
    contender, or if the contender has a more favorable speed x size factor. */
-
+/*
+  这里先采用s(i)最小策略进行favorite搜索，如果不止一个，再采用f(i)最小的策略。
+  如果还有，最后采用AFL的策略。
+*/
 
 static void update_bitmap_score(struct queue_entry* q) {
 
   u32 i;
-  u64 fuzz_p2      = next_p2 (q->n_fuzz);
+  u64 fuzz_p2      = next_p2 (q->n_fuzz); // new add
   u64 fav_factor = q->exec_us * q->len;
 
   /* For every byte set in trace_bits[], see if there is a previous winner,
@@ -1259,15 +1262,15 @@ static void update_bitmap_score(struct queue_entry* q) {
     if (trace_bits[i]) {
 
        if (top_rated[i]) {
-
+        /**************************************************************************/
          u64 top_rated_fuzz_p2    = next_p2 (top_rated[i]->n_fuzz);
          u64 top_rated_fav_factor = top_rated[i]->exec_us * top_rated[i]->len;
 
          if (fuzz_p2 > top_rated_fuzz_p2) continue;
          else if (fuzz_p2 == top_rated_fuzz_p2) {
-
-           if (fav_factor > top_rated_fav_factor) continue;
-
+        /*************************************************************************/ //new add
+           if (fav_factor > top_rated_fav_factor) continue; // new add modifity
+            // AFL : if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
          }
 
          /* Looks like we're going to win. Decrease ref count for the
@@ -1342,8 +1345,8 @@ static void cull_queue(void) {
       top_rated[i]->favored = 1;
       queued_favored++;
 
-      if (top_rated[i]->fuzz_level == 0) pending_favored++;
-
+      if (top_rated[i]->fuzz_level == 0) pending_favored++; // new add
+      // AFL :if (!top_rated[i]->was_fuzzed) pending_favored++;
     }
 
   q = queue;
@@ -3139,8 +3142,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  hnb;
   s32 fd;
   u8  keeping = 0, res;
-
-  /* Update path frequency. */
+  /**************************************************************************/
+  /* Update path frequency. AFLFast新增了更新高频路径的判断*/
   u32 cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
 
   struct queue_entry* q = queue;
@@ -3151,6 +3154,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     q = q->next;
 
   }
+  /**************************************************************************/ //new add
 
   if (fault == crash_mode) {
 
@@ -3180,7 +3184,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
       queued_with_cov++;
     }
 
-    queue_top->exec_cksum = cksum;
+    queue_top->exec_cksum = cksum; // new add
+    // AFL: queue_top->exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
 
     /* Try to calibrate inline; this also calls update_bitmap_score() when
        successful. */
@@ -3468,7 +3473,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              queued_variable, stability, bitmap_cvg, unique_crashes,
              unique_hangs, last_path_time / 1000, last_crash_time / 1000,
              last_hang_time / 1000, total_execs - last_crash_execs,
-             exec_tmout, use_banner, orig_cmdline);
+             exec_tmout, use_banner, orig_cmdline); // new add modifity
              /* ignore errors */
 
   fclose(f);
@@ -4018,7 +4023,7 @@ static void show_stats(void) {
 
   sprintf(tmp + banner_pad, "%s " cLCY VERSION cLGN
           " (%s)",  crash_mode ? cPIN "peruvian were-rabbit" : 
-          cYEL "american fuzzy lop (fast)", use_banner);
+          cYEL "american fuzzy lop (fast)", use_banner); // new add modifity
 
   SAYF("\n%s\n\n", tmp);
 
@@ -4118,7 +4123,7 @@ static void show_stats(void) {
      put them in a temporary buffer first. */
 
   sprintf(tmp, "%s%s%d (%0.02f%%)", DI(current_entry),
-          queue_cur->favored ? "." : "*", queue_cur->fuzz_level,
+          queue_cur->favored ? "." : "*", queue_cur->fuzz_level, // new add modifity AFL么有 queue_cur->fuzz_level
           ((double)current_entry * 100) / queued_paths);
 
   SAYF(bV bSTOP "  now processing : " cRST "%-17s " bSTG bV bSTOP, tmp);
@@ -4469,12 +4474,12 @@ static void show_init_stats(void) {
 
 
 /* Find first power of two greater or equal to val (assuming val under
-   2^63). */
+   2^63). */ // new add AFL 2^31
+// 求大于等于val的幂
+static u64 next_p2(u64 val) { // new add AFL: u32
 
-static u64 next_p2(u64 val) {
-
-  u64 ret = 1;
-  while (val > ret) ret <<= 1;
+  u64 ret = 1;  // new add AFL: u32
+  while (val > ret) ret <<= 1; // ret <<=1 表示 ret*2
   return ret;
 
 } 
@@ -4761,7 +4766,7 @@ static u32 calculate_score(struct queue_entry* q) {
     default:        perf_score *= 5;
 
   }
-
+  /***************************************************************/
   u64 fuzz = q->n_fuzz;
   u64 fuzz_total;
 
@@ -4778,20 +4783,20 @@ static u32 calculate_score(struct queue_entry* q) {
       break;
 
     case COE:
-      fuzz_total = 0;
-      n_paths = 0;
+      fuzz_total = 0; // fuzz_total指文章中的f(i)在 i属于S+下的连加和，其中f（i）表示执行路径为i的测试用例的总数，用于近似表示平稳分布的密度
+      n_paths = 0; // 指文章中的S+: 已经发现的路径数量
 
       struct queue_entry *queue_it = queue;	
       while (queue_it) {
-        fuzz_total += queue_it->n_fuzz;
+        fuzz_total += queue_it->n_fuzz; // n_fuzz表示f(i)
         n_paths ++;
         queue_it = queue_it->next;
       }
 
-      fuzz_mu = fuzz_total / n_paths;
+      fuzz_mu = fuzz_total / n_paths; // fuzz_mu指文章中的μ
       if (fuzz <= fuzz_mu) {
         if (q->fuzz_level < 16)
-          factor = ((u32) (1 << q->fuzz_level));
+          factor = ((u32) (1 << q->fuzz_level)); // 1的左移x位相当于是求2^x q->fuzz_level:s(i) 即从种子池中选取种子ti的次数。
         else 
           factor = MAX_FACTOR;
       } else {
@@ -4821,7 +4826,7 @@ static u32 calculate_score(struct queue_entry* q) {
     factor = MAX_FACTOR;
 
   perf_score *= factor / POWER_BETA;
-
+/******************************************************/ // new add 
   /* Make sure that we don't go over limit. */
 
   if (perf_score > HAVOC_MAX_MULT * 100) perf_score = HAVOC_MAX_MULT * 100;
@@ -5047,8 +5052,8 @@ static u8 fuzz_one(char** argv) {
     /* If we have any favored, non-fuzzed new arrivals in the queue,
        possibly skip to them at the expense of already-fuzzed or non-favored
        cases. */
-
-    if ((queue_cur->fuzz_level > 0 || !queue_cur->favored) &&
+    // AFL:if ((queue_cur->was_fuzzed || !queue_cur->favored) &&
+    if ((queue_cur->fuzz_level > 0 || !queue_cur->favored) && // new add modifitys
         UR(100) < SKIP_TO_NEW_PROB) return 1;
 
   } else if (!dumb_mode && !queue_cur->favored && queued_paths > 10) {
@@ -5056,8 +5061,8 @@ static u8 fuzz_one(char** argv) {
     /* Otherwise, still possibly skip non-favored cases, albeit less often.
        The odds of skipping stuff are higher for already-fuzzed inputs and
        lower for never-fuzzed entries. */
-
-    if (queue_cycle > 1 && queue_cur->fuzz_level == 0) {
+    // AFL:if (queue_cycle > 1 && !queue_cur->was_fuzzed) {
+    if (queue_cycle > 1 && queue_cur->fuzz_level == 0) { // new add modifitys
 
       if (UR(100) < SKIP_NFAV_NEW_PROB) return 1;
 
@@ -5157,13 +5162,13 @@ static u8 fuzz_one(char** argv) {
 
   orig_perf = perf_score = calculate_score(queue_cur);
 
-  if (perf_score == 0 && queued_paths > 10) goto abandon_entry;
+  if (perf_score == 0 && queued_paths > 10) goto abandon_entry; // new add
 
   /* Skip right away if -d is given, if it has not been chosen sufficiently
      often to warrant the expensive deterministic stage (fuzz_level), or
      if it has gone through deterministic testing in earlier, resumed runs
      (passed_det). */
-
+  /****************************************/
   if (skip_deterministic 
      || ((!queue_cur->passed_det) 
         && perf_score < (
@@ -5171,6 +5176,8 @@ static u8 fuzz_one(char** argv) {
               ? queue_cur->depth * 30 
               : HAVOC_MAX_MULT * 100))
      || queue_cur->passed_det)
+  /****************************************/ // new add
+  //AFL: if (skip_deterministic || queue_cur->was_fuzzed || queue_cur->passed_det)
     goto havoc_stage;
 
   /* Skip deterministic fuzzing if exec path checksum puts this out of scope
@@ -6694,12 +6701,12 @@ abandon_entry:
   /* Update pending_not_fuzzed count if we made it through the calibration
      cycle and have not seen this entry before. */
 
-  if (!stop_soon && !queue_cur->cal_failed && queue_cur->fuzz_level == 0) {
+  if (!stop_soon && !queue_cur->cal_failed && queue_cur->fuzz_level == 0) { // new add : was_fuzzed -> queue_cur->fuzz_level
     pending_not_fuzzed--;
     if (queue_cur->favored) pending_favored--;
   }
 
-  queue_cur->fuzz_level++;
+  queue_cur->fuzz_level++; // new add 
 
   munmap(orig_in, queue_cur->len);
 
@@ -7143,7 +7150,7 @@ static void usage(u8* argv0) {
 
        "Execution control settings:\n\n"
 
-       "  -p schedule   - power schedules recompute a seed's performance score.\n"
+       "  -p schedule   - power schedules recompute a seed's performance score.\n" // new add 
        "                  <fast (default), coe, explore, lin, quad, or exploit>\n"
        "  -f file       - location read by the fuzzed program (stdin)\n"
        "  -t msec       - timeout for each run (auto-scaled, 50-%u ms)\n"
@@ -7787,7 +7794,7 @@ static void save_cmdline(u32 argc, char** argv) {
   *buf = 0;
 
 }
-
+/************************************************/
 int stricmp(char const *a, char const *b) {
   int d;
   for (;; a++, b++) {
@@ -7796,7 +7803,7 @@ int stricmp(char const *a, char const *b) {
       return d;
   }
 }
-
+/************************************************/ //new add 
 #ifndef AFL_LIB
 
 /* Main entry point */
@@ -7821,8 +7828,8 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Qp:")) > 0)
-
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Qp:")) > 0) // new add modifity
+  // while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
     switch (opt) {
 
       case 'i': /* input dir */
@@ -7988,7 +7995,7 @@ int main(int argc, char** argv) {
         if (!mem_limit_given) mem_limit = MEM_LIMIT_QEMU;
 
         break;
-
+      /************************************************************/
       case 'p': /* Power schedule */
         if (!stricmp(optarg, "fast")) {
           schedule = FAST;
@@ -8004,7 +8011,7 @@ int main(int argc, char** argv) {
           schedule = EXPLORE;
         }
         break;
-
+      /************************************************************/ //new add 
       default:
 
         usage(argv[0]);
@@ -8027,7 +8034,7 @@ int main(int argc, char** argv) {
     if (qemu_mode)  FATAL("-Q and -n are mutually exclusive");
 
   }
-
+  /**********************************************************************************************/
   switch (schedule) {
     case FAST:    OKF ("Using exponential power schedule (FAST)"); break;
     case COE:     OKF ("Using cut-off exponential power schedule (COE)"); break;
@@ -8037,7 +8044,7 @@ int main(int argc, char** argv) {
     case EXPLORE: OKF ("Using exploration-based constant power schedule (EXPLORE)"); break;
     default : FATAL ("Unkown power schedule"); break;
   }
-
+  /**********************************************************************************************/ // new add 
   if (getenv("AFL_NO_FORKSRV"))    no_forkserver    = 1;
   if (getenv("AFL_NO_CPU_RED"))    no_cpu_meter_red = 1;
   if (getenv("AFL_NO_ARITH"))      no_arith         = 1;
